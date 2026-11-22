@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rm2027-sim-server"
+version = "2027.1.0"
+description = "RoboMaster 2027 V1.0.0 standalone match simulator, MQTT 3.1.1 auth broker, HEVC UDP:3334 streamer & connection diagnostics"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "RM2027 Sim Server Contributors" },
+]
+keywords = ["robomaster", "rm2027", "mqtt", "protobuf", "hevc", "simulator"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Environment :: Web Environment",
+  "Intended Audience :: Developers",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = []
+
+[project.scripts]
+rm2027-sim = "rm2027_sim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,39 @@
+{
+  "host": "127.0.0.1",
+  "port": 3333,
+  "control_port": 18885,
+  "auth": {
+    "mode": "open",
+    "users": {
+      "rm2027": "rm2027_secret"
+    },
+    "strict_client_id": false,
+    "denied_robot_ids": []
+  },
+  "match": {
+    "mode": "auto",
+    "random_events": "normal",
+    "speed": 1.0,
+    "stage": 0,
+    "auto_loop": false,
+    "respect_video_rules": true,
+    "seed": null
+  },
+  "video": {
+    "enabled": true,
+    "target_host": "127.0.0.1",
+    "target_port": 3334,
+    "auto_mirror_clients": true,
+    "backend": "auto",
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "bitrate_kbps": 2500,
+    "pattern": "ball",
+    "video_dir": "videos",
+    "video_file": "",
+    "loop_mode": "all",
+    "overlay_text": "",
+    "loss_percent": 0.0
+  }
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=RoboMaster 2027 Simulation Server (MQTT + HEVC + Web Console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rm2027-sim-server
+# 如通过 pip 安装到全局或 venv，可改为对应的 rm2027-sim 可执行路径
+ExecStart=/usr/bin/python3 /opt/rm2027-sim-server/run.py --config /opt/rm2027-sim-server/config.json
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# 如需固定参数启动而非 config.json，可改为：
+# ExecStart=/usr/bin/python3 /opt/rm2027-sim-server/run.py --host 127.0.0.1 --port 3333 --video-dir /opt/rm2027-sim-server/videos --username rm2027 --password secret
+
+[Install]
+WantedBy=multi-user.target
