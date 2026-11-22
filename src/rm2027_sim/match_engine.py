@@ -395,6 +395,7 @@ class MatchSimulator:
                         self.teams["blue"].economy += amt
                         self.teams["blue"].total_economy += amt
         self._accum_assembly_econ = 0.0
+        self._last_yellow_card_elapsed_s = -999.0
         self.event_history.clear()
         self._log_sim_event(2027, f"模拟赛局已就绪（阶段 {STAGE_NAMES.get(self.stage, self.stage)}）")
 
@@ -859,9 +860,15 @@ class MatchSimulator:
                 self.stage_countdown_s -= dt
                 if self.stage_countdown_s <= 0.0:
                     if self.auto_loop:
+                        prev_round = self.current_round
+                        prev_r, prev_b = self.red_score, self.blue_score
                         self.reset(stage=1)
+                        self.current_round = min(self.total_rounds, prev_round + 1)
+                        self.red_score, self.blue_score = prev_r, prev_b
                     else:
-                        self.reset(stage=0)
+                        self.stage_countdown_s = 0.0
+                        self.mode = "paused"
+                        self.is_paused = True
                     await self.broadcast_1hz()
                     return
 
@@ -1001,19 +1008,26 @@ class MatchSimulator:
 
         # Robot motion + skirmish simulation in auto mode
         if self.mode == "auto":
-            self._tick_auto_movement_and_skirmish(dt)
+            await self._tick_auto_movement_and_skirmish(dt)
             if self.random_events != "off":
                 await self._maybe_trigger_random_event(dt)
 
         # Win/end condition check
         if red_t.base_hp == 0 or blue_t.base_hp == 0 or self.elapsed_s >= MATCH_DURATION_S:
-            if self.mode == "auto":
-                self._finalize_match()
-                await self._emit_event(2099, "比赛结束，进入结算阶段")
+            self._finalize_match()
+            if self.auto_loop:
+                await self._emit_event(2099, "比赛结束，进入结算阶段（15s 后自动开启下一局）")
+            else:
+                await self._emit_event(2099, "本局比赛结束，已进入结算并自动暂停")
+            await self.broadcast_5hz()
+            await self.broadcast_1hz()
 
     def _finalize_match(self) -> None:
         self.stage = 5
-        self.stage_countdown_s = 15.0
+        self.stage_countdown_s = 15.0 if self.auto_loop else 0.0
+        if not self.auto_loop:
+            self.mode = "paused"
+            self.is_paused = True
         r, b = self.teams["red"], self.teams["blue"]
         if r.base_hp != b.base_hp and (r.base_hp == 0 or b.base_hp == 0):
             winner = "red" if r.base_hp > b.base_hp else "blue"
@@ -1032,7 +1046,7 @@ class MatchSimulator:
         else:
             self.game_result = 3
 
-    def _tick_auto_movement_and_skirmish(self, dt: float) -> None:
+    async def _tick_auto_movement_and_skirmish(self, dt: float) -> None:
         for r in self.robots.values():
             if not r.alive or not r.online:
                 continue
@@ -1044,39 +1058,71 @@ class MatchSimulator:
             r.yaw = (math.degrees(math.atan2(dy, dx)) + 360.0) % 360.0
             r.chassis_power = max(18.0, min(float(r.max_power), 42.0 + 18.0 * abs(math.sin(r.patrol_phase))))
 
+        # Proactive tech-core assembly initiation when new difficulty level unlocks
+        unlocked_lv = max_unlocked_assembly_level(self.elapsed_s)
+        for team_name, t in self.teams.items():
+            if t.tech_level < unlocked_lv and t.tech_core_basic_state != 1:
+                unlock_at = (t.tech_level) * 60.0
+                if self.elapsed_s >= unlock_at + (12.0 if team_name == "red" else 18.0):
+                    t.tech_core_basic_state = 1
+                    t.tech_core_target_level = t.tech_level + 1
+                    t.tech_core_putin = 0
+                    t.tech_core_move = 0
+                    t.tech_core_rotate = 0
+                    t.tech_core_remain_all_s = 6.0
+                    t.tech_core_remain_step_s = 1.8
+
         self._accum_combat += dt
-        if self._accum_combat >= 1.5:
+        if self._accum_combat >= 1.0:
             self._accum_combat = 0.0
-            # Light periodic skirmish between alive infantry/sentry units
-            if self.rng.random() < 0.65:
+            # Periodic combat skirmish between alive units (can reduce HP to 0 and trigger kills)
+            if self.rng.random() < 0.80:
                 shooter_team = self.rng.choice(("red", "blue"))
-                victim_team = "blue" if shooter_team == "red" else "red"
                 s_base = 0 if shooter_team == "red" else 100
                 v_base = 100 if shooter_team == "red" else 0
-                shooter = self.ensure_robot(s_base + self.rng.choice((3, 4, 7)))
-                victim = self.ensure_robot(v_base + self.rng.choice((1, 3, 4, 7)))
-                if shooter.alive and victim.alive and shooter.remaining_ammo > 5:
-                    shots = self.rng.randint(2, 5)
+                alive_shooters = [
+                    self.ensure_robot(s_base + s)
+                    for s in (1, 3, 4, 7)
+                    if self.ensure_robot(s_base + s).alive and self.ensure_robot(s_base + s).remaining_ammo > 2
+                ]
+                alive_victims = [
+                    self.ensure_robot(v_base + s)
+                    for s in (1, 3, 4, 7)
+                    if self.ensure_robot(v_base + s).alive
+                ]
+                if alive_shooters and alive_victims:
+                    shooter = self.rng.choice(alive_shooters)
+                    victim = self.rng.choice(alive_victims)
+                    is_heavy = (shooter.robot_id % 100) == 1
+                    shots = 1 if is_heavy else self.rng.randint(3, 7)
                     shooter.remaining_ammo = max(0, shooter.remaining_ammo - shots)
                     shooter.projectiles_fired += shots
-                    shooter.heat = min(float(shooter.max_heat) * 0.9, shooter.heat + shots * 8.0)
-                    shooter.experience += 15
+                    shooter.heat = min(float(shooter.max_heat) * 0.9, shooter.heat + shots * (25.0 if is_heavy else 7.0))
+                    shooter.experience += 25
                     if shooter.experience >= shooter.experience_for_upgrade and shooter.level < 10:
                         shooter.level += 1
                         shooter.experience -= shooter.experience_for_upgrade
                         shooter.experience_for_upgrade += 120
-                    dmg = shots * 10
-                    victim.hp = max(1, victim.hp - dmg)
+                    dmg = self.rng.randint(75, 115) if is_heavy else shots * 14
+                    victim.hp = max(0, victim.hp - dmg)
                     victim.out_of_combat = False
                     victim.out_of_combat_countdown = 6
                     victim.injury["total_damage"] += dmg
-                    victim.injury["small_projectile_damage"] += dmg
+                    if is_heavy:
+                        victim.injury["large_projectile_damage"] += dmg
+                    else:
+                        victim.injury["small_projectile_damage"] += dmg
                     victim.injury["killer_id"] = shooter.robot_id
                     self.teams[shooter_team].total_damage += dmg
+                    if victim.hp <= 0:
+                        await self.trigger_manual(
+                            "kill_robot",
+                            {"victim_id": victim.robot_id, "killer_id": shooter.robot_id},
+                        )
 
     async def _maybe_trigger_random_event(self, dt: float) -> None:
-        intervals = {"low": 14.0, "normal": 7.5, "high": 3.5}
-        period = intervals.get(self.random_events, 7.5)
+        intervals = {"low": 12.0, "normal": 6.5, "high": 3.2}
+        period = intervals.get(self.random_events, 6.5)
         self._accum_random += dt
         if self._accum_random < period:
             return
@@ -1089,14 +1135,19 @@ class MatchSimulator:
             "grant_buff",
             "outpost_damage",
         ]
+        unlocked_lv = max_unlocked_assembly_level(self.elapsed_s)
+        if any(t.tech_level < unlocked_lv for t in self.teams.values()):
+            choices.extend(["tech_core_auto", "tech_core_auto", "tech_core_auto"])
+        if self.elapsed_s >= 15.0:
+            choices.extend(["kill_skirmish", "kill_skirmish"])
         if self.elapsed_s >= 30.0:
             choices.extend(["dart_gate", "dart_hit"])
-        if self.elapsed_s >= 60.0:
-            choices.extend(["tech_core_auto", "kill_skirmish"])
         if self.elapsed_s >= 120.0:
             choices.append("rune_auto")
-        if self.random_events in ("normal", "high"):
-            choices.extend(["module_glitch", "yellow_card_brief", "overheat_brief"])
+        if self.random_events in ("normal", "high") and self.elapsed_s >= 45.0:
+            choices.extend(["module_glitch", "overheat_brief"])
+            if (self.elapsed_s - self._last_yellow_card_elapsed_s) >= 90.0:
+                choices.append("yellow_card_brief")
 
         action = self.rng.choice(choices)
         team = self.rng.choice(("red", "blue"))
@@ -1119,12 +1170,20 @@ class MatchSimulator:
         elif action == "dart_hit":
             await self.trigger_manual("dart_hit", {"firing_team": team, "target_id": self.rng.randint(1, 3)})
         elif action == "tech_core_auto":
-            next_lv = min(max_unlocked_assembly_level(self.elapsed_s), self.teams[team].tech_level + 1)
-            if next_lv > self.teams[team].tech_level:
-                await self.trigger_manual("tech_core_step", {"team": team, "level": next_lv})
+            eligible_teams = [
+                t_name for t_name, t_obj in self.teams.items() if t_obj.tech_level < unlocked_lv
+            ]
+            target_team = self.rng.choice(eligible_teams) if eligible_teams else team
+            next_lv = min(unlocked_lv, self.teams[target_team].tech_level + 1)
+            if next_lv > self.teams[target_team].tech_level:
+                await self.trigger_manual("tech_core_step", {"team": target_team, "level": next_lv})
         elif action == "kill_skirmish":
-            victim_id = (100 if team == "red" else 0) + self.rng.choice((3, 4))
-            killer_id = (0 if team == "red" else 100) + self.rng.choice((1, 3))
+            v_base = 100 if team == "red" else 0
+            k_base = 0 if team == "red" else 100
+            alive_victims = [v_base + s for s in (1, 3, 4, 7) if self.ensure_robot(v_base + s).alive]
+            alive_killers = [k_base + s for s in (1, 3, 4, 7) if self.ensure_robot(k_base + s).alive]
+            victim_id = self.rng.choice(alive_victims) if alive_victims else (v_base + self.rng.choice((3, 4)))
+            killer_id = self.rng.choice(alive_killers) if alive_killers else (k_base + self.rng.choice((1, 3)))
             await self.trigger_manual("kill_robot", {"victim_id": victim_id, "killer_id": killer_id})
         elif action == "rune_auto":
             await self.trigger_manual("rune_activate", {"team": team})
@@ -1132,11 +1191,15 @@ class MatchSimulator:
             rid = (0 if team == "red" else 100) + 3
             await self.trigger_manual("module_fault", {"robot_id": rid, "module": "capacitor", "state": 0})
         elif action == "yellow_card_brief":
-            if self.rng.random() < 0.35:
+            prob = 0.15 if self.random_events == "high" else 0.08
+            if self.rng.random() < prob:
                 rid = self._primary_connected_robot_id()
-                await self.trigger_manual("yellow_card", {"robot_id": rid, "seconds": 3})
+                if self.ensure_robot(rid).penalty_blind_s <= 0.0:
+                    self._last_yellow_card_elapsed_s = self.elapsed_s
+                    await self.trigger_manual("yellow_card", {"robot_id": rid, "seconds": 3})
         elif action == "overheat_brief":
-            if self.rng.random() < 0.30:
+            prob = 0.16 if self.random_events == "high" else 0.08
+            if self.rng.random() < prob:
                 rid = self._primary_connected_robot_id()
                 await self.trigger_manual("overheat", {"robot_id": rid, "excess": 25})
 

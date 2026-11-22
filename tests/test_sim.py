@@ -488,6 +488,38 @@ class BrokerMatchAndWebIntegrationTests(unittest.TestCase):
         self.assertIn("video_dir", state["video"]["config"])
         self.assertIn("available_files", state["video"])
 
+    def test_match_end_auto_pause_kills_assembly_and_low_yellow_card_rate(self) -> None:
+        sim = MatchSimulator(mode="auto", random_events="normal", speed=1.0, start_stage=4, auto_loop=False, seed=19)
+        kill_events = 0
+        yellow_card_events = 0
+
+        async def run_full_game() -> None:
+            nonlocal kill_events, yellow_card_events
+            for _ in range(425):
+                if sim.stage != 4 or sim.mode == "paused":
+                    break
+                prev_len = len(sim.event_history)
+                await sim.step(1.0)
+                new_evs = list(sim.event_history)[prev_len:]
+                for ev in new_evs:
+                    if ev["event_id"] == 1:
+                        kill_events += 1
+                    elif ev["event_id"] == 2020:
+                        yellow_card_events += 1
+
+        asyncio.run_coroutine_threadsafe(run_full_game(), self.loop).result(timeout=5.0)
+        # Match should have ended at 420s (or base destroyed) and auto-paused in settlement stage 5
+        self.assertEqual(sim.stage, 5)
+        self.assertEqual(sim.mode, "paused")
+        self.assertTrue(sim.is_paused)
+        self.assertGreaterEqual(sim.red_score + sim.blue_score + (1 if sim.game_result == 3 else 0), 1)
+        # Both teams should have progressed tech core assembly to Lv3/Lv4
+        self.assertGreaterEqual(sim.teams["red"].tech_level, 3)
+        self.assertGreaterEqual(sim.teams["blue"].tech_level, 3)
+        # Multiple robot kills should occur, while random yellow cards remain rare
+        self.assertGreaterEqual(kill_events, 4)
+        self.assertLessEqual(yellow_card_events, 2)
+
 
 class VideoStreamerTests(unittest.TestCase):
     def test_packetize_and_annexb_au_splitting(self) -> None:

@@ -1437,6 +1437,9 @@ async function refreshState() {
     } else if (sim.stage === 4) {
       $('elapsedLabel').textContent = `已进行 ${Math.round(sim.elapsed_s)}s / 420s · 倍速 ${sim.speed}×`;
       $('clockBar').style.width = Math.min(100, (sim.elapsed_s / 420.0) * 100).toFixed(1) + '%';
+    } else if (sim.stage === 5 && sim.mode === 'paused') {
+      $('elapsedLabel').textContent = `本局已结束并自动暂停 · 比分 红 ${sim.score.red} : ${sim.score.blue} 蓝（点击开赛或重置可开启下一局）`;
+      $('clockBar').style.width = '100%';
     } else {
       $('elapsedLabel').textContent = `${sim.stage_name} · 倒计时 ${Math.round(sim.stage_countdown_s)}s`;
       $('clockBar').style.width = '100%';
